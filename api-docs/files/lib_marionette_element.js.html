@@ -417,7 +417,22 @@
         type: &#x27;getElementPosition&#x27;
       };
       return this._sendCommand(cmd, &#x27;value&#x27;, callback);
-    }
+    },
+
+    /**
+     * Returns the value of the specified CSS property name.
+     *
+     * @method cssProperty
+     * @param {Function} callback [Error err, String value]
+     * @return {Object} self.
+     */
+     cssProperty: function cssProperty(property, callback) {
+       var cmd = {
+         type: &#x27;getElementValueOfCssProperty&#x27;,
+         propertyName: property
+       };
+       return this._sendCommand(cmd, &#x27;value&#x27;, callback);
+     }
   };
 
   module.exports = Element;

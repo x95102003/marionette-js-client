@@ -364,7 +364,7 @@
       this._state = {
         context: &#x27;content&#x27;,
         scriptTimeout: 5000,
-        searchTimeout: 250
+        searchTimeout: 5000
       };
 
       // give the root client a scope.
@@ -588,7 +588,7 @@
         var value;
         try {
           value = self._transformResultValue(data[responseKey]);
-        } catch(e) {
+        } catch (e) {
           console.log(&#x27;Error: unable to transform marionette response&#x27;, data);
         }
         return self._handleCallback(callback, data.error, value);
@@ -712,6 +712,8 @@
       // setup options
       options = options || {};
 
+      var sync = this.isSync;
+
       // must handle default callback case for sync code
       callback = callback || this.defaultCallback;
 
@@ -721,36 +723,77 @@
       // interval between test being fired.
       var interval = options.interval || DEFAULT_WAIT_FOR_INTERVAL;
 
-      // remember this runs on the host
-      function sleep(interval) {
-        setTimeout(marionetteScriptFinished, interval);
-      }
-
-      var runtest = function runtest() {
-        if (Date.now() &gt;= timeout) {
-          return callback(new Error(&#x27;waitFor timed out&#x27;));
-        }
-
-        // mocha style &quot;done&quot; argument
-        test(function(err, result) {
-          if (err || result)
-            return callback(err, result);
-
-          // test has failed retry
-          this.executeAsyncScript(sleep, [interval], runtest);
-        }.bind(this));
-      }.bind(this);
-
-      // length indicates arity we use mocha style &quot;done&quot; so if an argument
-      // is not passed this test is sync and we fire done with the result
-      // of the given &quot;test&quot; function rather then passing a &quot;done&quot; argument.
-      if (!test.length) {
-        var originalTest = test;
-        test = function(done) {
-          done(null, originalTest());
+      var modifiedTest = test;
+      if (test.length === 0) {
+        // Give me a callback!
+        modifiedTest = function(done) {
+          done(null, test());
         };
       }
-      runtest();
+
+      return (sync ? this.waitForSync : this.waitForAsync).call(
+        this, modifiedTest, callback, interval, timeout);
+    },
+
+    /**
+     * Poll some boolean function until it returns true synchronously.
+     *
+     * @param {Function} test some function that returns a boolean.
+     * @param {Function} callback function to call once our test passes or
+     *     we time out.
+     * @param {number} interval how often to poll in ms.
+     * @param {number} timeout time at which we fail in ms.
+     */
+    waitForSync: function(test, callback, interval, timeout) {
+      var err, result;
+
+      while (Date.now() &lt; timeout) {
+        if (err || result) {
+          return callback(err);
+        }
+
+        test(function(_err, _result) {
+          err = _err;
+          result = _result;
+        });
+
+        this.executeAsyncScript(function(waitMillis) {
+          setTimeout(marionetteScriptFinished, waitMillis);
+        }, [interval]);
+      }
+
+      callback(new Error(&#x27;timeout exceeded!&#x27;));
+    },
+
+    /**
+     * Poll some boolean function until it returns true asynchronously.
+     *
+     * @param {Function} test some function that returns a boolean.
+     * @param {Function} callback function to call once our test passes or
+     *     we time out.
+     * @param {number} interval how often to poll in ms.
+     * @param {number} timeout time at which we fail in ms.
+     */
+    waitForAsync: function(test, callback, interval, timeout) {
+      if (Date.now() &gt;= timeout) {
+        return callback(new Error(&#x27;timeout exceeded&#x27;));
+      }
+
+      test(function(err, result) {
+        if (err || result) {
+          return callback(err, result);
+        }
+
+        var next = this.waitForAsync.bind(
+          this,
+          test,
+          callback,
+          interval,
+          timeout
+        );
+
+        setTimeout(next, interval);
+      }.bind(this));
     },
 
     /**
@@ -803,11 +846,24 @@
     },
 
     /**
+     *  Returns the capabilities of the current session.
+     *
+     * @method sessionCapabilities
+     * @param {Function} [callback]
+     *  executed with capabilities of current session.
+     * @return {Object} A JSON representing capabilities.
+     */
+     sessionCapabilities: function sessionCapabilities(callback) {
+       var cmd = { type: &#x27;getSessionCapabilities&#x27; };
+       return this._sendCommand(cmd, &#x27;value&#x27;, callback);
+     },
+
+    /**
      * Callback will receive the id of the current window.
      *
      * @chainable
      * @method getWindow
-     * @param {Function} callback executed with id of current window.
+     * @param {Function} [callback] executed with id of current window.
      * @return {Object} self.
      */
     getWindow: function getWindow(callback) {
@@ -818,9 +874,9 @@
     /**
      * Callback will receive an array of window ids.
      *
-     * @method getWindow
+     * @method getWindows
      * @chainable
-     * @param {Function} callback executes with an array of ids.
+     * @param {Function} [callback] executes with an array of ids.
      */
     getWindows: function getWindows(callback) {
       var cmd = { type: &#x27;getWindows&#x27; };
@@ -840,6 +896,18 @@
       var cmd = { type: &#x27;switchToWindow&#x27;, value: id };
       return this._sendCommand(cmd, &#x27;ok&#x27;, callback);
     },
+
+    /**
+     * Returns the type of current window.
+     *
+     * @method getWindowType
+     * @param {Function} [callback] executes with window type.
+     * @return {Object} self.
+     */
+     getWindowType: function getWindowType(callback) {
+       var cmd = { type: &#x27;getWindowType&#x27; };
+       return this._sendCommand(cmd, &#x27;value&#x27;, callback);
+     },
 
     /**
      * Imports a script into the marionette
@@ -933,7 +1001,15 @@
     },
 
     /**
-     * setSearchTimeout
+     * Sets a timeout for the find methods.
+     *
+     * When searching for an element using either Marionette.findElement or
+     * Marionette.findElements, the method will continue trying to locate the
+     * element for up to timeout ms.
+     *
+     * This can be useful if, for example, the element you’re looking for might
+     * not exist immediately, because it belongs to a page which is currently
+     * being loaded.
      *
      * @method setSearchTimeout
      * @chainable
@@ -946,6 +1022,18 @@
       setState(this, &#x27;searchTimeout&#x27;, timeout);
       return this._sendCommand(cmd, &#x27;ok&#x27;, callback);
     },
+
+    /**
+     * Returns the title of current window.
+     *
+     * @method title
+     * @param {Function} [callback] optional receives title.
+     * @return {Object} self.
+     */
+     title: function title(callback) {
+       var cmd = { type: &#x27;getTitle&#x27; };
+       return this._sendCommand(cmd, &#x27;value&#x27;, callback);
+     },
 
     /**
      * Gets url location for device.
@@ -1048,6 +1136,18 @@
       var cmd = { type: &#x27;getLogs&#x27; };
       return this._sendCommand(cmd, &#x27;value&#x27;, callback);
     },
+
+    /**
+     * Returns a string representation of the DOM in current page.
+     *
+     * @method pageSource
+     * @param {Function} [callback] optional receives the page source.
+     * @return {Object} self.
+     */
+     pageSource: function pageSource(callback) {
+       var cmd = { type: &#x27;getPageSource&#x27; };
+       return this._sendCommand(cmd, &#x27;value&#x27;, callback);
+     },
 
     /**
      * Creates a base64-encoded screenshot of the element, or the current frame
